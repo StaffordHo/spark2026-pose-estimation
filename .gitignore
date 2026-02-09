@@ -1,0 +1,45 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Data files (too large for git)
+h5/
+*.h5
+
+# Model checkpoints
+checkpoints/
+*.pth
+*.pt
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# TensorBoard
+runs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cache
+.cache/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Visualizations output
+visualizations/

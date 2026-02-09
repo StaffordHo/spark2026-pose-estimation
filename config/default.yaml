@@ -1,0 +1,50 @@
+# SPARK2026 Pose Estimation Configuration
+
+# Data settings
+data:
+  data_dir: "."  # Root directory containing h5/ folder
+  num_bins: 5    # Temporal bins for voxel grid (creates 10 channels: 5 ON + 5 OFF)
+  height: 720
+  width: 1280
+  batch_size: 16  # Increase to 32 if memory allows on RTX 4090
+  num_workers: 4
+
+# Model settings
+model:
+  backbone: "resnet"  # "voxel_cnn" or "resnet" (resnet is faster)
+  in_channels: 10     # 2 * num_bins
+  feature_dim: 512
+  hidden_dim: 256
+  base_channels: 32
+  dropout: 0.1
+  with_uncertainty: false
+
+# Loss settings
+loss:
+  trans_weight: 1.0
+  rot_weight: 1.0
+  trans_loss_type: "smooth_l1"  # "mse" or "smooth_l1"
+  rot_loss_type: "geodesic"     # "geodesic" or "mse"
+
+# Training settings
+training:
+  epochs: 100
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  scheduler: "cosine"    # "cosine" or "step"
+  warmup_epochs: 5
+  grad_clip: 1.0
+  amp: true              # Mixed precision training
+
+# Logging & checkpoints
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+  log_interval: 50       # Log every N batches
+  val_interval: 1        # Validate every N epochs
+  save_best: true
+
+# Experiment
+experiment:
+  name: "spark2026_pose"
+  seed: 42

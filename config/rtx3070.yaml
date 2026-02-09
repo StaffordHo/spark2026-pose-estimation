@@ -1,0 +1,50 @@
+# SPARK2026 Pose Estimation - Configuration for RTX 3070 (8GB VRAM)
+
+# Data settings
+data:
+  data_dir: "."
+  num_bins: 5
+  height: 720
+  width: 1280
+  batch_size: 8       # Reduced for 8GB VRAM
+  num_workers: 0      # Must be 0 on Windows to avoid multiprocessing hang
+
+# Model settings
+model:
+  backbone: "resnet"
+  in_channels: 10
+  feature_dim: 256    # Reduced from 512
+  hidden_dim: 128     # Reduced from 256
+  base_channels: 32
+  dropout: 0.1
+  with_uncertainty: false
+
+# Loss settings
+loss:
+  trans_weight: 1.0
+  rot_weight: 1.0
+  trans_loss_type: "smooth_l1"
+  rot_loss_type: "geodesic"
+
+# Training settings
+training:
+  epochs: 100
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  scheduler: "cosine"
+  warmup_epochs: 5
+  grad_clip: 1.0
+  amp: true           # Essential for 3070
+
+# Logging & checkpoints
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+  log_interval: 50
+  val_interval: 1
+  save_best: true
+
+# Experiment
+experiment:
+  name: "spark2026_pose_3070"
+  seed: 42
