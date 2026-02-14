@@ -20,18 +20,21 @@ from src.metrics import compute_metrics, MetricTracker
 
 def load_model(checkpoint_path: str, device: torch.device) -> tuple:
     """Load model from checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = checkpoint["config"]
     
     model_cfg = config["model"]
     model = PoseNet(
-        backbone=model_cfg["backbone"],
+        backbone=model_cfg.get("backbone", "resnet"),
         in_channels=model_cfg["in_channels"],
         feature_dim=model_cfg["feature_dim"],
         hidden_dim=model_cfg["hidden_dim"],
-        base_channels=model_cfg["base_channels"],
-        dropout=model_cfg["dropout"],
-        with_uncertainty=model_cfg["with_uncertainty"]
+        base_channels=model_cfg.get("base_channels", 32),
+        dropout=model_cfg.get("dropout", 0.3),
+        with_uncertainty=model_cfg.get("with_uncertainty", False),
+        pretrained=False,  # Don't download weights for eval
+        rotation_repr=model_cfg.get("rotation_repr", "quaternion"),
+        freeze_backbone=False  # Don't freeze for eval
     )
     
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -122,13 +125,19 @@ def main():
     print(f"Model loaded: {model.backbone_name} backbone")
     
     # Create dataset
+    data_cfg = config["data"]
+    target_size = tuple(data_cfg["target_size"]) if "target_size" in data_cfg else None
+    normalize_translation = data_cfg.get("normalize_translation", False)
+    
     print(f"\nLoading {args.split} dataset...")
     dataset = SPARK2026Dataset(
         data_dir=args.data_dir,
         split=args.split,
-        num_bins=config["data"]["num_bins"],
-        height=config["data"]["height"],
-        width=config["data"]["width"]
+        num_bins=data_cfg["num_bins"],
+        height=data_cfg["height"],
+        width=data_cfg["width"],
+        target_size=target_size,
+        normalize_translation=normalize_translation
     )
     
     dataloader = torch.utils.data.DataLoader(

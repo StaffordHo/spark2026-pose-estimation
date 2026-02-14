@@ -20,6 +20,11 @@ class SPARK2026Dataset(Dataset):
     Each sample consists of events within a time window and the corresponding pose.
     """
     
+    # Translation normalization stats (computed over 30 sequences)
+    # These keep translation targets near zero, preventing gradient explosion in smooth_l1
+    TRANS_MEAN = torch.tensor([-0.24, 0.03, 5.68], dtype=torch.float32)
+    TRANS_STD = torch.tensor([0.93, 0.50, 1.40], dtype=torch.float32)
+    
     def __init__(
         self,
         data_dir: str,
@@ -29,7 +34,10 @@ class SPARK2026Dataset(Dataset):
         width: int = 1280,
         window_size: int = 1000,  # 100ms in 100µs units
         sequences: Optional[List[str]] = None,
-        transform=None
+        transform=None,
+        target_size: Optional[Tuple[int, int]] = None,  # (H, W) to resize to
+        augmentation: bool = False,
+        normalize_translation: bool = False
     ):
         """
         Args:
@@ -40,6 +48,8 @@ class SPARK2026Dataset(Dataset):
             window_size: Event window size in timestamp units (100µs)
             sequences: Optional list of specific sequences to use
             transform: Optional transforms to apply
+            target_size: Optional (H, W) tuple to resize voxel grids
+            augmentation: Whether to apply data augmentation (train only)
         """
         self.data_dir = data_dir
         self.split = split
@@ -48,6 +58,9 @@ class SPARK2026Dataset(Dataset):
         self.width = width
         self.window_size = window_size
         self.transform = transform
+        self.target_size = target_size
+        self.augmentation = augmentation and (split == "train")
+        self.normalize_translation = normalize_translation
         
         # Get all h5 files
         h5_files = sorted(glob.glob(os.path.join(data_dir, "h5", "RT*.h5")))
@@ -79,6 +92,10 @@ class SPARK2026Dataset(Dataset):
                     self.samples.append((h5_path, seq_name, pose_idx))
         
         print(f"Total samples: {len(self.samples)}", flush=True)
+        if self.target_size:
+            print(f"Resizing voxel grids to {self.target_size}", flush=True)
+        if self.augmentation:
+            print(f"Data augmentation enabled", flush=True)
     
     def __len__(self) -> int:
         return len(self.samples)
@@ -102,8 +119,9 @@ class SPARK2026Dataset(Dataset):
                     "timestamp": f["labels"]["data"]["timestamp"][()],
                 }
             
-            # Limit cache size to avoid memory issues
-            if len(self.file_cache) > 50:
+            # Limit cache size — each DataLoader worker has its own cache
+            # With 4 workers × 30 cached × ~143MB/seq = ~17GB RAM total
+            if len(self.file_cache) > 30:
                 oldest_key = next(iter(self.file_cache))
                 del self.file_cache[oldest_key]
         
@@ -126,13 +144,26 @@ class SPARK2026Dataset(Dataset):
         ts = data["ts"][event_mask]
         ps = data["ps"][event_mask]
         
-        # Convert to voxel grid
-        voxel = events_to_voxel_grid_fast(
-            xs, ys, ts, ps,
-            num_bins=self.num_bins,
-            height=self.height,
-            width=self.width
-        )
+        # Build voxel grid directly at target resolution if specified
+        # This is ~14x faster than building at full res and resizing
+        if self.target_size is not None:
+            target_h, target_w = self.target_size
+            # Scale event coordinates to target resolution
+            xs_scaled = (xs.astype(np.float32) * target_w / self.width)
+            ys_scaled = (ys.astype(np.float32) * target_h / self.height)
+            voxel = events_to_voxel_grid_fast(
+                xs_scaled, ys_scaled, ts, ps,
+                num_bins=self.num_bins,
+                height=target_h,
+                width=target_w
+            )
+        else:
+            voxel = events_to_voxel_grid_fast(
+                xs, ys, ts, ps,
+                num_bins=self.num_bins,
+                height=self.height,
+                width=self.width
+            )
         
         # Get pose labels
         translation = torch.tensor([
@@ -150,6 +181,35 @@ class SPARK2026Dataset(Dataset):
         
         # Normalize quaternion
         quaternion = quaternion / quaternion.norm()
+        
+        # Normalize translation to ~N(0,1) for stable training
+        if self.normalize_translation:
+            translation = (translation - self.TRANS_MEAN) / self.TRANS_STD
+        
+        # --- Data Augmentation ---
+        if self.augmentation:
+            # Random horizontal flip (50%)
+            if torch.rand(1).item() > 0.5:
+                voxel = torch.flip(voxel, dims=[2])  # Flip width
+                translation[0] = -translation[0]  # Negate Tx
+                # Flip quaternion: negate Qy and Qz for horizontal flip
+                quaternion[1] = -quaternion[1]  # Qy
+                quaternion[2] = -quaternion[2]  # Qz
+            
+            # Random polarity flip (30%) - swap ON and OFF channels
+            if torch.rand(1).item() > 0.7:
+                # ON channels: 0, 2, 4, ... OFF channels: 1, 3, 5, ...
+                num_ch = voxel.shape[0]
+                perm = torch.zeros(num_ch, dtype=torch.long)
+                for c in range(0, num_ch, 2):
+                    perm[c] = c + 1    # ON -> OFF position
+                    perm[c + 1] = c    # OFF -> ON position
+                voxel = voxel[perm]
+            
+            # Random additive noise (20%)
+            if torch.rand(1).item() > 0.8:
+                noise = torch.rand_like(voxel) * 0.05
+                voxel = voxel + noise
         
         sample = {
             "voxel": voxel,
@@ -170,14 +230,29 @@ def get_dataloaders(
     batch_size: int = 32,
     num_workers: int = 4,
     num_bins: int = 5,
+    target_size: Optional[Tuple[int, int]] = None,
+    augmentation: bool = False,
+    normalize_translation: bool = False,
     **kwargs
 ) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
     """
     Create train, val, test dataloaders.
     """
-    train_dataset = SPARK2026Dataset(data_dir, split="train", num_bins=num_bins, **kwargs)
-    val_dataset = SPARK2026Dataset(data_dir, split="val", num_bins=num_bins, **kwargs)
-    test_dataset = SPARK2026Dataset(data_dir, split="test", num_bins=num_bins, **kwargs)
+    train_dataset = SPARK2026Dataset(
+        data_dir, split="train", num_bins=num_bins,
+        target_size=target_size, augmentation=augmentation,
+        normalize_translation=normalize_translation, **kwargs
+    )
+    val_dataset = SPARK2026Dataset(
+        data_dir, split="val", num_bins=num_bins,
+        target_size=target_size, augmentation=False,
+        normalize_translation=normalize_translation, **kwargs
+    )
+    test_dataset = SPARK2026Dataset(
+        data_dir, split="test", num_bins=num_bins,
+        target_size=target_size, augmentation=False,
+        normalize_translation=normalize_translation, **kwargs
+    )
     
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -185,7 +260,9 @@ def get_dataloaders(
         shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
-        drop_last=True
+        drop_last=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=4 if num_workers > 0 else None
     )
     
     val_loader = torch.utils.data.DataLoader(
@@ -193,7 +270,9 @@ def get_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=4 if num_workers > 0 else None
     )
     
     test_loader = torch.utils.data.DataLoader(
@@ -201,7 +280,9 @@ def get_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=4 if num_workers > 0 else None
     )
     
     return train_loader, val_loader, test_loader

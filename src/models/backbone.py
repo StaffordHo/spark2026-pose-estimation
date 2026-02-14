@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
+from torchvision import models
 
 
 class ConvBlock3D(nn.Module):
@@ -176,6 +177,102 @@ class EventResNet(nn.Module):
         x = self.layer4(x)
         
         x = self.global_pool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        
+        return x
+
+
+class PretrainedEfficientNet(nn.Module):
+    """
+    Pretrained EfficientNet-B0 backbone adapted for event voxel grid input.
+    
+    Loads ImageNet-pretrained weights and adapts the first conv layer
+    from 3 channels to `in_channels` (default 10) for event voxel grid input.
+    
+    Features:
+    - Smart weight initialization: averages pretrained 3ch weights across N channels
+    - Backbone freezing for staged fine-tuning
+    - Outputs feature vector of size `feature_dim`
+    """
+    
+    def __init__(
+        self,
+        in_channels: int = 10,
+        feature_dim: int = 512,
+        pretrained: bool = True,
+        freeze_backbone: bool = False
+    ):
+        super().__init__()
+        
+        # Load pretrained EfficientNet-B0
+        if pretrained:
+            weights = models.EfficientNet_B0_Weights.DEFAULT
+            base_model = models.efficientnet_b0(weights=weights)
+            print("Loaded ImageNet-pretrained EfficientNet-B0 weights", flush=True)
+        else:
+            base_model = models.efficientnet_b0(weights=None)
+        
+        # Adapt first conv layer for N-channel input
+        original_conv = base_model.features[0][0]
+        new_conv = nn.Conv2d(
+            in_channels, 
+            original_conv.out_channels,
+            kernel_size=original_conv.kernel_size,
+            stride=original_conv.stride,
+            padding=original_conv.padding,
+            bias=original_conv.bias is not None
+        )
+        
+        if pretrained:
+            # Smart initialization: average pretrained 3ch weights across N channels
+            with torch.no_grad():
+                # Original weights shape: (32, 3, 3, 3)
+                # Repeat and average to get (32, in_channels, 3, 3)
+                pretrained_weight = original_conv.weight.data
+                avg_weight = pretrained_weight.mean(dim=1, keepdim=True)  # (32, 1, 3, 3)
+                new_conv.weight.data = avg_weight.repeat(1, in_channels, 1, 1)
+        
+        base_model.features[0][0] = new_conv
+        
+        # Extract features (remove classifier)
+        self.features = base_model.features
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        
+        # EfficientNet-B0 outputs 1280 features
+        self.fc = nn.Linear(1280, feature_dim)
+        
+        self.feature_dim = feature_dim
+        self._frozen = freeze_backbone
+        
+        if freeze_backbone:
+            self.freeze_backbone()
+    
+    def freeze_backbone(self):
+        """Freeze all backbone layers except the first conv and final FC."""
+        for name, param in self.features.named_parameters():
+            if not name.startswith("0.0."):  # Don't freeze our new first conv
+                param.requires_grad = False
+        self._frozen = True
+        print("Backbone frozen (except conv1 and FC)", flush=True)
+    
+    def unfreeze_backbone(self):
+        """Unfreeze all backbone layers."""
+        for param in self.features.parameters():
+            param.requires_grad = True
+        self._frozen = False
+        print("Backbone unfrozen", flush=True)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Voxel grid of shape (B, C, H, W)
+            
+        Returns:
+            Feature vector of shape (B, feature_dim)
+        """
+        x = self.features(x)
+        x = self.avgpool(x)
         x = x.view(x.size(0), -1)
         x = self.fc(x)
         

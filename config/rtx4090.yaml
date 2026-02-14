@@ -1,0 +1,50 @@
+# SPARK2026 Pose Estimation - Configuration for RTX 4090 (24GB VRAM)
+
+# Data settings
+data:
+  data_dir: "."
+  num_bins: 5
+  height: 720
+  width: 1280
+  batch_size: 32        # Larger batch for 24GB VRAM
+  num_workers: 4        # Parallel data loading
+
+# Model settings
+model:
+  backbone: "resnet"
+  in_channels: 10
+  feature_dim: 512      # Full size (vs 256 on 3070)
+  hidden_dim: 256       # Full size (vs 128 on 3070)
+  base_channels: 32
+  dropout: 0.1
+  with_uncertainty: false
+
+# Loss settings
+loss:
+  trans_weight: 1.0
+  rot_weight: 1.0
+  trans_loss_type: "smooth_l1"
+  rot_loss_type: "geodesic"
+
+# Training settings
+training:
+  epochs: 100
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  scheduler: "cosine"
+  warmup_epochs: 5
+  grad_clip: 1.0
+  amp: true             # Mixed precision for speed
+
+# Logging & checkpoints
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+  log_interval: 50
+  val_interval: 1
+  save_best: true
+
+# Experiment
+experiment:
+  name: "spark2026_pose_4090"
+  seed: 42

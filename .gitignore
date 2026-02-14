@@ -43,3 +43,12 @@ Thumbs.db
 
 # Visualizations output
 visualizations/
+
+# Test data (large H5 files)
+test/
+
+# Submissions
+submission*.csv
+
+# Gemini
+.gemini/

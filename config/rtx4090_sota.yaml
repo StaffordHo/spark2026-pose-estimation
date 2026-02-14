@@ -1,0 +1,63 @@
+# =============================================================================
+# SOTA Configuration for RTX 4090
+# =============================================================================
+# Key improvements over baseline:
+#   1. 6D continuous rotation representation (Zhou et al., CVPR 2019)
+#   2. Pretrained EfficientNet-B0 backbone
+#   3. Input resizing (1280x720 -> 256x256)
+#   4. Data augmentation (horizontal flip, polarity flip, noise)
+#   5. Loss rebalancing (rot_weight=3.0) + cosine warm restarts
+# =============================================================================
+
+experiment:
+  name: "spark2026_sota"
+  seed: 42
+
+data:
+  data_dir: "."
+  batch_size: 64
+  num_workers: 4
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [256, 256]   # Resize voxel grids — 14x memory reduction
+  augmentation: true         # Train-only augmentation
+  normalize_translation: true # Normalize Tx/Ty/Tz to ~N(0,1) for stable training
+
+model:
+  backbone: "efficientnet"   # Pretrained EfficientNet-B0
+  pretrained: true           # Use ImageNet weights
+  freeze_backbone: true      # Freeze backbone initially
+  unfreeze_at_epoch: 5       # Unfreeze backbone at epoch 5
+  backbone_lr_scale: 0.1     # 10x lower LR for backbone
+  rotation_repr: "6d"        # 6D continuous rotation (CVPR 2019)
+  in_channels: 10
+  feature_dim: 512
+  hidden_dim: 256
+  base_channels: 32
+  dropout: 0.2
+  with_uncertainty: false
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 3.0            # Higher rotation weight
+  trans_loss_type: "smooth_l1"
+  rot_loss_type: "geodesic"  # Unused for 6D — geodesic_loss_matrix is used instead
+
+training:
+  epochs: 60
+  learning_rate: 0.0003      # Conservative LR for stability
+  weight_decay: 0.01
+  scheduler: "cosine_warm_restarts"
+  T_0: 10                    # First restart cycle length
+  T_mult: 2                  # Double cycle length after each restart
+  warmup_epochs: 3
+  amp: true
+  grad_clip: 0.5             # Tighter clipping for stability
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

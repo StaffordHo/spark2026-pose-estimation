@@ -1,0 +1,60 @@
+# =============================================================================
+# SOTA Configuration v2 — Higher Resolution (384x384)
+# =============================================================================
+# Same as rtx4090_sota.yaml but with 384x384 input for more spatial detail.
+# Requires slightly smaller batch size to fit in 24GB VRAM.
+# Use after initial 256x256 training completes to see if higher res helps.
+# =============================================================================
+
+experiment:
+  name: "spark2026_sota_384"
+  seed: 42
+
+data:
+  data_dir: "."
+  batch_size: 32              # Halved from 64 for 384x384 VRAM fit
+  num_workers: 4
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [384, 384]     # Higher resolution — 2.25x more pixels than 256x256
+  augmentation: true
+  normalize_translation: true
+
+model:
+  backbone: "efficientnet"
+  pretrained: true
+  freeze_backbone: true
+  unfreeze_at_epoch: 5
+  backbone_lr_scale: 0.1
+  rotation_repr: "6d"
+  in_channels: 10
+  feature_dim: 512
+  hidden_dim: 256
+  base_channels: 32
+  dropout: 0.2
+  with_uncertainty: false
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 3.0
+  trans_loss_type: "smooth_l1"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 60
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  scheduler: "cosine_warm_restarts"
+  T_0: 10
+  T_mult: 2
+  warmup_epochs: 3
+  amp: true
+  grad_clip: 0.5
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+  log_interval: 10
+  val_interval: 1
+  save_best: true
