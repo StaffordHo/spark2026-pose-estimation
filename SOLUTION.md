@@ -43,6 +43,27 @@ Our hybrid approach achieved:
 - **Rank**: 9th Place Globally
 - **Competition**: [SPARK 2026 - Codabench](https://www.codabench.org/competitions/12706/#/results-tab)
 
+---
+
+## Reflections: Proving the Concept & Lessons Learned
+
+### What this Project Proved
+This project demonstrated that **event cameras are a viable and superior alternative** for 6-DoF pose estimation in high-contrast, high-motion environments like space. Specifically:
+*   **High Temporal Fidelity**: We proved that encoding temporal information into voxel grids allows models to resolve motion blur issues that plague traditional RGB cameras.
+*   **Decomposition is Key**: We proved that for complex 6-DoF tasks, the "all-in-one" model approach is often suboptimal. Decoupling translation and rotation optimization leads to significantly higher precision.
+*   **Geometry + Deep Learning**: While deep learning handles the feature extraction, geometric post-processing (SLERP) is essential for physically consistent results.
+
+### Mistakes & Missteps
+*   **The "Jitter" Oversight**: Early in the competition, we focused solely on per-frame accuracy (MAE), ignoring the temporal jitter. This led to high orientation errors on the leaderboard despite good validation scores.
+*   **Keypoint Complexity**: We spent significant time on a 2D-to-3D keypoint projection pipeline. While mathematically elegant, it was hyper-sensitive to outlier detections. Reverting to direct regression with specialized backbones was a hard but necessary pivot.
+*   **Synthetic-to-Real Gap**: Initially, we didn't account for the event density difference between the training data and the test set. Our models initially performed poorly on sparse sequences until we implemented **Density Augmentation**.
+
+### Lessons Learnt & Iterative Evolution
+1.  **Iteration 1-5 (Exploration)**: We learned that ResNet-50 was too "shallow" for the noise in event data. **Lesson**: Scale the backbone depth to the noise level.
+2.  **Iteration 6-10 (Decomposition)**: We noticed that when translation error went down, rotation error often plateaued. **Lesson**: Stop trying to make one model do everything perfectly. We started training specialized "Translation Experts" (v7) and "Rotation Experts" (v15).
+3.  **Iteration 11-15 (Robustness)**: We added "Density Augmentation" to simulate low-bandwidth event streams. **Lesson**: Training on "perfect" synthetic data makes models fragile.
+4.  **Iteration 16-18 (Refinement)**: We introduced SLERP. **Lesson**: The final 1% of performance is found in the transition between frames, not just the frames themselves.
+
 ## Repository Structure
 - `config/`: Configuration files for all model versions (`v1` to `v18`).
 - `src/models/`: Implementation of `PoseNet`, `FPN`, and `KeypointHead`.
