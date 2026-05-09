@@ -1,3 +1,15 @@
+# SPARK 2026: Spacecraft Pose Estimation (9th Place Solution)
+
+[![Solution](https://img.shields.io/badge/Documentation-Solution_9th_Place-gold)](SOLUTION.md)
+
+This repository contains the source code for our 9th place global solution in the SPARK 2026 competition. 
+
+**Quick Links:**
+- [Detailed Technical Solution](SOLUTION.md)
+- [Competition Leaderboard](https://www.codabench.org/competitions/12706/#/results-tab)
+
+---
+
 # Dataset Description
 
 This dataset contains **synthetic** event streams, along with their corresponding ground-truth labels. The data is organized in directories for events and labels for both types of datasets.
