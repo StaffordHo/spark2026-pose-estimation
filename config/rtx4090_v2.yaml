@@ -1,0 +1,63 @@
+# =============================================================================
+# Improved SOTA Configuration for RTX 4090
+# =============================================================================
+# Key improvements over previous config:
+#   1. Higher resolution (480x480 vs 256x256) for better spatial detail
+#   2. 60 epochs training (was effectively 3)
+#   3. Earlier backbone unfreezing (epoch 3 instead of 5)
+#   4. Separate checkpoint dir to preserve old checkpoints
+# =============================================================================
+
+experiment:
+  name: "spark2026_v2"
+  seed: 42
+
+data:
+  data_dir: "."
+  batch_size: 24              # Lower batch size for higher resolution
+  num_workers: 0              # Data pre-loaded in RAM
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [480, 480]     # 480x480 — 3.5x more pixels than 256x256
+  augmentation: true
+  normalize_translation: true
+
+model:
+  backbone: "efficientnet"
+  pretrained: true
+  freeze_backbone: true
+  unfreeze_at_epoch: 3        # Unfreeze at epoch 3 (was 5)
+  backbone_lr_scale: 0.1      # 10x lower LR for backbone
+  rotation_repr: "6d"
+  in_channels: 10
+  feature_dim: 512
+  hidden_dim: 256
+  base_channels: 32
+  dropout: 0.2
+  with_uncertainty: false
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 3.0
+  trans_loss_type: "smooth_l1"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 60
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  scheduler: "cosine_warm_restarts"
+  T_0: 10
+  T_mult: 2
+  warmup_epochs: 3
+  amp: true
+  grad_clip: 0.5
+  save_every_epoch: true
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v2"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

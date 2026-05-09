@@ -1,0 +1,63 @@
+# =============================================================================
+# V5: SOTA Architecture — Deeper Backbone + Spatial Head
+# =============================================================================
+# Improvements:
+#   1. EfficientNet-B3 backbone (stronger features)
+#   2. Higher resolution (320x320) but with density augmentation
+#   3. Longer wait before unfreezing (let head adapt first)
+#   4. Combined train_all split (270 sequences)
+# =============================================================================
+
+experiment:
+  name: "spark2026_v5"
+  seed: 42
+
+data:
+  data_dir: "."
+  batch_size: 48                # Slightly smaller for B3
+  num_workers: 0                # Set to 0 to avoid PickleError on Windows
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [320, 320]       # Increase resolution for B3
+  augmentation: true
+  normalize_translation: true
+  density_augmentation: true    # Essential for domain gap
+  train_split: "train_all"
+
+model:
+  backbone: "efficientnet_b3"   # NEW: Deeper backbone
+  pretrained: true
+  freeze_backbone: true
+  unfreeze_at_epoch: 10         # Wait longer
+  backbone_lr_scale: 0.1
+  rotation_repr: "6d"
+  in_channels: 10
+  feature_dim: 1024             # B3 outputs more features
+  hidden_dim: 512
+  dropout: 0.3
+  with_uncertainty: false
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 5.0               # Increase rotation weight for precision
+  trans_loss_type: "huber"      # NEW: Huber loss for robustness
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 80                    # More epochs for better convergence
+  learning_rate: 0.0003
+  weight_decay: 0.05
+  scheduler: "cosine_warm_restarts"
+  T_0: 20
+  T_mult: 1
+  warmup_epochs: 5
+  amp: true
+  grad_clip: 1.0
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v5"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

@@ -16,7 +16,7 @@ experiment:
 data:
   data_dir: "."
   batch_size: 64
-  num_workers: 4
+  num_workers: 0              # Data pre-loaded in RAM, no I/O workers needed
   num_bins: 5
   height: 720
   width: 1280
@@ -54,6 +54,7 @@ training:
   warmup_epochs: 3
   amp: true
   grad_clip: 0.5             # Tighter clipping for stability
+  save_every_epoch: true       # Save checkpoint every epoch for submission testing
 
 logging:
   log_dir: "logs"

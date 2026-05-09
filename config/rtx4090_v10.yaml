@@ -1,0 +1,56 @@
+# V10: Super-Symmetric SOTA Recovery
+# Changes from V9:
+# 1. Rolls back resolution to 384x384 (Sweet spot for high precision without orbit memorization)
+# 2. Reverts to 6D Continuous Rotation (Smoother loss, proven stable in V8)
+# 3. Synchronized LR (0.0003 for both) to preserve Backbone-Head symmetry
+# 4. Staged unfreeze: Backbone frozen for 5 epochs
+
+experiment:
+  name: "spark2026_v10_supersym"
+  seed: 42
+
+data:
+  data_dir: "."
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [384, 384]    # Precision rollback
+  batch_size: 64             # More stable gradients
+  num_workers: 0             # Windows stability
+  augmentation: true
+  density_augmentation: true
+  normalize_translation: true
+  train_split: "train" 
+
+model:
+  backbone: "efficientnet_b3"
+  in_channels: 10
+  feature_dim: 1024
+  hidden_dim: 512
+  dropout: 0.2
+  with_uncertainty: false
+  rotation_repr: "6d"        # Restored for stability
+  pretrained: true
+  freeze_backbone: true
+  unfreeze_at_epoch: 5
+  backbone_lr_scale: 1.0     # Synchronized LR
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 5.0            # Balanced priority
+  trans_loss_type: "huber"
+
+training:
+  epochs: 30
+  learning_rate: 0.0003      # Conservative symmetric LR
+  weight_decay: 0.0001
+  amp: true
+  scheduler: "cosine"
+  warmup_epochs: 2
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v10"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

@@ -1,0 +1,59 @@
+# =============================================================================
+# V18 "Translation Specialist" Configuration for RTX 4090
+# =============================================================================
+# Goal: Resume from V15 SOTA but invert the loss weights to perfectly fit
+# the bounding box / translation, completely ignoring orientation.
+# Will be ensembled with V15 for inference.
+# =============================================================================
+
+experiment:
+  name: "spark2026_v18_trans_specialist"
+  seed: 42
+
+data:
+  data_dir: "."
+  batch_size: 40                # Same as V15
+  num_workers: 0                # To prevent Windows MultiProcessing Pickle crashes with massive RAM datasets
+  num_bins: 5                   # Standard 1ms window
+  height: 720
+  width: 1280
+  target_size: [320, 320]       # Retain V15 spatial capacity
+  augmentation: false           # Disabled to preserve precise geometry
+  normalize_translation: true
+  robust_augmentation: false
+  sequence_length: 1
+
+model:
+  architecture: "baseline"
+  backbone: "efficientnet_b3"
+  pretrained: false             # We load V15 weights later
+  freeze_backbone: false
+  in_channels: 10
+  feature_dim: 1536
+  hidden_dim: 512               # Same as V15
+  dropout: 0.1                  # Minimal dropout
+  with_uncertainty: false
+  rotation_repr: "quaternion"   # Match V15 structure simply to run forward pass, we ignore it in loss
+
+loss:
+  trans_weight: 10.0            # MASSIVELY INCREASED (V15 was 1.0)
+  rot_weight: 0.1               # MASSIVELY DECREASED (V15 was 15.0)
+
+training:
+  epochs: 50                    # More epochs for thorough translation tuning
+  learning_rate: 0.00001        # 1e-5 (gentle tuning of V15 weights)
+  weight_decay: 0.001
+  scheduler: "cosine_warm_restarts"
+  T_0: 10
+  T_mult: 2
+  warmup_epochs: 1              # Short warmup
+  amp: true
+  grad_clip: 1.0
+  save_every_epoch: true        # Save every epoch so we can pick the best
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v18"
+  log_interval: 50
+  val_interval: 1
+  save_best: true

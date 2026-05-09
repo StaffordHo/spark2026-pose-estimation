@@ -1,0 +1,55 @@
+# V14: Sub-Degree Specialist
+# Changes:
+# 1. Backbone: ConvNeXt-Tiny (Superior spatial attention)
+# 2. Rotation: 6D continuous (Smoother loss landscape)
+# 3. Resolution: 320x320 (To prevent trajectory overfitting)
+# 4. Stealth Mode: Robust augs explicitly DISABLED
+
+experiment:
+  name: "spark2026_v14_sub_degree"
+  seed: 42
+
+data:
+  data_dir: "."
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [320, 320]
+  batch_size: 64
+  num_workers: 0             # Windows stability
+  augmentation: true         # V7 baseline flips enabled
+  robust_augmentation: false # Gated V11 additions DISABLED 
+  density_augmentation: true
+  normalize_translation: true
+  train_split: "train" 
+
+model:
+  backbone: "convnext_tiny"  # Modern spatial attention
+  in_channels: 10
+  feature_dim: 768           # ConvNeXt output
+  hidden_dim: 384
+  dropout: 0.3               # Slightly higher for ConvNeXt
+  freeze_backbone: false
+  backbone_lr_scale: 0.2     # Slower backbone than head
+  rotation_repr: "6d"        # 6D Continuous
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 15.0           # Assertive Orientation Focus
+  trans_loss_type: "huber"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 45                 # Fresh run requires more epochs
+  learning_rate: 0.0003      # Standard fine-tuning
+  weight_decay: 0.05
+  amp: true
+  scheduler: "cosine"
+  warmup_epochs: 3
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v14"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

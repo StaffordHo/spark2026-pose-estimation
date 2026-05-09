@@ -52,3 +52,5 @@ submission*.csv
 
 # Gemini
 .gemini/
+
+.agents/

@@ -1,193 +1,232 @@
 """
-Evaluation script for trained pose estimation models.
+Local evaluation script — simulates CodaBench scoring on the validation set.
+
+Evaluates checkpoints and ranks them by estimated Pose Error.
+Uses batched inference for speed (~2 min per checkpoint).
+
+Usage:
+    python evaluate.py --config config/rtx4090_sota.yaml --tta
+    python evaluate.py --checkpoint checkpoints/epoch_1.pth --tta
 """
 
 import os
 import sys
 import argparse
-import json
+import glob
+import yaml
+import time
 
-import torch
 import numpy as np
-from tqdm import tqdm
+import torch
+import torch.nn as nn
+from torch.amp import autocast
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.dataset import SPARK2026Dataset
+from src.dataset import SPARK2026Dataset, get_dataloaders
 from src.models import PoseNet
-from src.metrics import compute_metrics, MetricTracker
 
 
-def load_model(checkpoint_path: str, device: torch.device) -> tuple:
-    """Load model from checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    config = checkpoint["config"]
-    
+def load_config(config_path: str) -> dict:
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
+
+
+def create_model(config: dict) -> nn.Module:
+    """Create model from config."""
     model_cfg = config["model"]
     model = PoseNet(
-        backbone=model_cfg.get("backbone", "resnet"),
-        in_channels=model_cfg["in_channels"],
-        feature_dim=model_cfg["feature_dim"],
-        hidden_dim=model_cfg["hidden_dim"],
+        backbone=model_cfg.get("backbone", "voxel_cnn"),
+        in_channels=model_cfg.get("in_channels", 10),
+        feature_dim=model_cfg.get("feature_dim", 512),
+        hidden_dim=model_cfg.get("hidden_dim", 256),
         base_channels=model_cfg.get("base_channels", 32),
-        dropout=model_cfg.get("dropout", 0.3),
+        dropout=model_cfg.get("dropout", 0.1),
         with_uncertainty=model_cfg.get("with_uncertainty", False),
-        pretrained=False,  # Don't download weights for eval
         rotation_repr=model_cfg.get("rotation_repr", "quaternion"),
-        freeze_backbone=False  # Don't freeze for eval
+        pretrained=False,
+        freeze_backbone=False
     )
-    
+    return model
+
+
+def evaluate_checkpoint(checkpoint_path, val_loader, device, tta=False):
+    """Evaluate a single checkpoint on the validation set using batched inference."""
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    config = checkpoint["config"]
+    model = create_model(config)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
     model.eval()
-    
-    return model, config
 
+    epoch = checkpoint.get("epoch", -1) + 1
+    normalize_translation = config["data"].get("normalize_translation", True)
+    use_amp = config["training"].get("amp", False)
 
-@torch.no_grad()
-def evaluate(
-    model: torch.nn.Module,
-    dataloader: torch.utils.data.DataLoader,
-    device: torch.device
-) -> dict:
-    """Evaluate model on a dataset."""
-    tracker = MetricTracker()
-    
-    all_preds = {"translation": [], "quaternion": []}
-    all_targets = {"translation": [], "quaternion": []}
-    seq_errors = {}
-    
-    for batch in tqdm(dataloader, desc="Evaluating"):
-        voxel = batch["voxel"].to(device)
-        target = {
-            "translation": batch["translation"].to(device),
-            "quaternion": batch["quaternion"].to(device)
-        }
-        
-        pred = model(voxel)
-        tracker.update(pred, target)
-        
-        # Store per-sequence results
-        for i, seq_name in enumerate(batch["seq_name"]):
-            if seq_name not in seq_errors:
-                seq_errors[seq_name] = {"pos": [], "rot": []}
-            
-            pos_err = torch.norm(pred["translation"][i] - target["translation"][i]).item()
-            
-            q_pred = pred["quaternion"][i]
-            q_gt = target["quaternion"][i]
-            dot = torch.abs(torch.dot(q_pred, q_gt))
-            rot_err = 2.0 * torch.acos(torch.clamp(dot, -1.0, 1.0)) * 180 / np.pi
-            
-            seq_errors[seq_name]["pos"].append(pos_err)
-            seq_errors[seq_name]["rot"].append(rot_err.item())
-        
-        # Store raw predictions
-        all_preds["translation"].append(pred["translation"].cpu())
-        all_preds["quaternion"].append(pred["quaternion"].cpu())
-        all_targets["translation"].append(target["translation"].cpu())
-        all_targets["quaternion"].append(target["quaternion"].cpu())
-    
-    # Aggregate metrics
-    metrics = tracker.compute()
-    
-    # Per-sequence summary
-    seq_summary = {}
-    for seq_name, errors in seq_errors.items():
-        seq_summary[seq_name] = {
-            "pos_mean": np.mean(errors["pos"]),
-            "pos_std": np.std(errors["pos"]),
-            "rot_mean": np.mean(errors["rot"]),
-            "rot_std": np.std(errors["rot"])
-        }
-    
+    # Translation normalization stats
+    TRANS_MEAN = SPARK2026Dataset.TRANS_MEAN.to(device)
+    TRANS_STD = SPARK2026Dataset.TRANS_STD.to(device)
+
+    all_trans_errors = []
+    all_rot_errors = []
+    num_batches = len(val_loader)
+
+    with torch.no_grad():
+        for i, batch in enumerate(val_loader):
+            if i % 50 == 0:
+                print(f"  Batch {i}/{num_batches}", flush=True)
+            voxel = batch["voxel"].to(device)
+            gt_trans_raw = batch["translation"].to(device)
+            gt_quat_raw = batch["quaternion"].to(device)
+
+            if normalize_translation:
+                gt_trans_m = gt_trans_raw * TRANS_STD + TRANS_MEAN
+            else:
+                gt_trans_m = gt_trans_raw
+
+            def get_m_coords(v):
+                with autocast('cuda', enabled=use_amp):
+                    p = model(v)
+                t = p["translation"].float()
+                if normalize_translation:
+                    t = t * TRANS_STD + TRANS_MEAN
+                q = p["quaternion"].float()
+                return t, q
+
+            if tta:
+                # 4 augmentations: Original, HFlip, VFlip, Both
+                t0, q0 = get_m_coords(voxel)
+                
+                t1, q1 = get_m_coords(torch.flip(voxel, dims=[3])) # HFlip
+                t1[:, 0] = -t1[:, 0]
+                q1[:, 1] = -q1[:, 1]; q1[:, 2] = -q1[:, 2]
+                
+                t2, q2 = get_m_coords(torch.flip(voxel, dims=[2])) # VFlip
+                t2[:, 1] = -t2[:, 1]
+                q2[:, 0] = -q2[:, 0]; q2[:, 2] = -q2[:, 2]
+                
+                t3, q3 = get_m_coords(torch.flip(voxel, dims=[2, 3])) # Both
+                t3[:, 0] = -t3[:, 0]; t3[:, 1] = -t3[:, 1]
+                q3[:, 0] = -q3[:, 0]; q3[:, 1] = -q3[:, 1]
+
+                pred_trans_m = (t0 + t1 + t2 + t3) / 4.0
+                
+                # Quaternion average with sign alignment
+                for qi in [q1, q2, q3]:
+                    dot = (qi * q0).sum(dim=-1, keepdim=True)
+                    qi[:] = torch.where(dot < 0, -qi, qi)
+                pred_quat = (q0 + q1 + q2 + q3) / 4.0
+                pred_quat = pred_quat / (pred_quat.norm(dim=-1, keepdim=True) + 1e-8)
+            else:
+                pred_trans_m, pred_quat = get_m_coords(voxel)
+
+            # Errors
+            trans_err = torch.norm(pred_trans_m - gt_trans_m, dim=1)
+            all_trans_errors.append(trans_err.cpu())
+
+            dot = torch.abs(torch.sum(pred_quat * gt_quat_raw, dim=1))
+            dot = torch.clamp(dot, 0.0, 1.0)
+            rot_err = 2.0 * torch.acos(dot) * 180.0 / np.pi # degrees
+            all_rot_errors.append(rot_err.cpu())
+
+    trans_errors = torch.cat(all_trans_errors).numpy()
+    rot_errors = torch.cat(all_rot_errors).numpy()
+
     return {
-        "overall": metrics,
-        "per_sequence": seq_summary
+        "epoch": epoch,
+        "checkpoint": os.path.basename(checkpoint_path),
+        "trans_mean": trans_errors.mean(),
+        "trans_median": np.median(trans_errors),
+        "orient_mean": rot_errors.mean(),    # degrees
+        "orient_median": np.median(rot_errors), # degrees
+        "pose_error": trans_errors.mean() + (rot_errors.mean() * np.pi / 180.0), # radians-based pose score
+        "n_samples": len(trans_errors),
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate pose estimation model")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
-    parser.add_argument("--split", type=str, default="test", choices=["train", "val", "test"])
-    parser.add_argument("--data_dir", type=str, default=".", help="Data directory")
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--output", type=str, default=None, help="Output JSON file for results")
+    parser = argparse.ArgumentParser(description="Local evaluation (simulates CodaBench)")
+    parser.add_argument("--config", type=str, default="config/rtx4090_sota.yaml")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                       help="Single checkpoint path, or comma-separated list")
+    parser.add_argument("--tta", action="store_true", help="Test-time augmentation")
     args = parser.parse_args()
-    
+
+    config = load_config(args.config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+
+    # Determine checkpoints to evaluate
+    if args.checkpoint:
+        checkpoints = [c.strip() for c in args.checkpoint.split(",")]
+    else:
+        checkpoint_dir = config["logging"]["checkpoint_dir"]
+        checkpoints = sorted(
+            glob.glob(os.path.join(checkpoint_dir, "epoch_*.pth")),
+            key=lambda x: int(os.path.basename(x).replace("epoch_", "").replace(".pth", ""))
+        )
+        best_path = os.path.join(checkpoint_dir, "best.pth")
+        if os.path.exists(best_path):
+            checkpoints.append(best_path)
+
+    if not checkpoints:
+        print("No checkpoints found!")
+        return
+
+    # Create val dataloader (loaded from first checkpoint's config for consistency)
+    print("Loading validation data...", flush=True)
+    first_ckpt = torch.load(checkpoints[0], map_location='cpu', weights_only=False)
+    ckpt_config = first_ckpt["config"]
     
-    # Load model
-    print(f"Loading model from {args.checkpoint}...")
-    model, config = load_model(args.checkpoint, device)
-    print(f"Model loaded: {model.backbone_name} backbone")
-    
-    # Create dataset
-    data_cfg = config["data"]
-    target_size = tuple(data_cfg["target_size"]) if "target_size" in data_cfg else None
-    normalize_translation = data_cfg.get("normalize_translation", False)
-    
-    print(f"\nLoading {args.split} dataset...")
-    dataset = SPARK2026Dataset(
-        data_dir=args.data_dir,
-        split=args.split,
-        num_bins=data_cfg["num_bins"],
-        height=data_cfg["height"],
-        width=data_cfg["width"],
-        target_size=target_size,
+    target_size_cfg = ckpt_config["data"].get("target_size", [256, 256])
+    target_size = tuple(target_size_cfg)
+    num_bins = ckpt_config["data"].get("num_bins", 5)
+    normalize_translation = ckpt_config["data"].get("normalize_translation", True)
+
+    val_dataset = SPARK2026Dataset(
+        ckpt_config["data"]["data_dir"], split="val",
+        num_bins=num_bins,
+        target_size=target_size, augmentation=False,
         normalize_translation=normalize_translation
     )
-    
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=ckpt_config["data"].get("batch_size", 32),
+        shuffle=False, num_workers=0, pin_memory=True
     )
-    
-    print(f"Dataset size: {len(dataset)} samples")
-    
-    # Evaluate
-    print("\nRunning evaluation...")
-    results = evaluate(model, dataloader, device)
-    
-    # Print results
-    print("\n" + "=" * 50)
-    print("EVALUATION RESULTS")
-    print("=" * 50)
-    
-    overall = results["overall"]
-    print(f"\nPosition Error:")
-    print(f"  Mean:   {overall['pos_error_mean']:.4f} m")
-    print(f"  Median: {overall['pos_error_median']:.4f} m")
-    print(f"  Std:    {overall['pos_error_std']:.4f} m")
-    
-    print(f"\nRotation Error:")
-    print(f"  Mean:   {overall['rot_error_mean']:.2f}°")
-    print(f"  Median: {overall['rot_error_median']:.2f}°")
-    print(f"  Std:    {overall['rot_error_std']:.2f}°")
-    
-    # Show worst sequences
-    per_seq = results["per_sequence"]
-    worst_pos = sorted(per_seq.items(), key=lambda x: x[1]["pos_mean"], reverse=True)[:5]
-    worst_rot = sorted(per_seq.items(), key=lambda x: x[1]["rot_mean"], reverse=True)[:5]
-    
-    print("\nWorst 5 sequences by position error:")
-    for seq, err in worst_pos:
-        print(f"  {seq}: {err['pos_mean']:.4f}m ± {err['pos_std']:.4f}")
-    
-    print("\nWorst 5 sequences by rotation error:")
-    for seq, err in worst_rot:
-        print(f"  {seq}: {err['rot_mean']:.2f}° ± {err['rot_std']:.2f}")
-    
-    # Save results
-    if args.output:
-        with open(args.output, "w") as f:
-            json.dump(results, f, indent=2)
-        print(f"\nResults saved to {args.output}")
+
+    print(f"\nEvaluating {len(checkpoints)} checkpoint(s) on {len(val_dataset)} val samples")
+    print(f"Target Size: {target_size} | Num Bins: {num_bins}")
+    print(f"TTA: {'enabled' if args.tta else 'disabled'}")
+
+    print(f"\nEvaluating {len(checkpoints)} checkpoint(s) on {len(val_dataset)} val samples")
+    print(f"TTA: {'enabled' if args.tta else 'disabled'}")
+    print("=" * 75)
+
+    all_results = []
+
+    for ckpt_path in checkpoints:
+        name = os.path.basename(ckpt_path)
+        print(f"Evaluating {name}...", end=" ", flush=True)
+        t0 = time.time()
+        results = evaluate_checkpoint(ckpt_path, val_loader, device, tta=args.tta)
+        dt = time.time() - t0
+        print(f"{dt:.1f}s | Trans: {results['trans_mean']:.4f}m | Orient: {results['orient_mean']:.4f} deg | Pose: {results['pose_error']:.4f}")
+        all_results.append(results)
+
+    # Rank by pose error
+    print("\n" + "=" * 75)
+    print("RANKING (sorted by Pose Error, lower = better)")
+    print("=" * 75)
+    print(f"{'Rank':<5} {'Checkpoint':<20} {'Trans':>8} {'Orient':>8} {'Pose':>10}")
+    print("-" * 55)
+
+    all_results.sort(key=lambda x: x["pose_error"])
+    for rank, r in enumerate(all_results, 1):
+        marker = " ★" if rank == 1 else ""
+        print(f"{rank:<5} {r['checkpoint']:<20} {r['trans_mean']:>8.4f} {r['orient_mean']:>8.4f} {r['pose_error']:>10.4f}{marker}")
+
+    best = all_results[0]
+    print(f"\n✅ Best: {best['checkpoint']} (Pose Error: {best['pose_error']:.4f})")
+    print(f"   → python predict.py --checkpoint checkpoints/{best['checkpoint']} --output submission.csv --tta")
 
 
 if __name__ == "__main__":

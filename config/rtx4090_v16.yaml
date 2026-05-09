@@ -1,0 +1,54 @@
+# V16: Head-Only Tuning
+# Changes:
+# 1. Base: Resumes from V15 latest.pth
+# 2. model.freeze_backbone = True (Protects our 0.34m spatial features)
+# 3. loss.rot_weight = 30.0 (Extreme orientation focus)
+# 4. training.learning_rate = 1e-5 (Surgical head adaptation)
+
+experiment:
+  name: "spark2026_v16_head_tuned"
+  seed: 42
+
+data:
+  data_dir: "."
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [320, 320]
+  batch_size: 64
+  num_workers: 0             # Windows stability
+  augmentation: true         # V7 baseline flips enabled
+  robust_augmentation: false # Gated V11 additions DISABLED 
+  density_augmentation: true
+  normalize_translation: true
+  train_split: "train" 
+
+model:
+  backbone: "efficientnet_b3"
+  in_channels: 10
+  feature_dim: 1024
+  hidden_dim: 512
+  dropout: 0.2
+  freeze_backbone: true      # V16 Strategy: Lock the CNN features
+  rotation_repr: "quaternion"
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 30.0           # Extreme Head-Only Focus
+  trans_loss_type: "huber"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 25                 
+  learning_rate: 0.00001     # 1e-5 surgical LR for the head
+  weight_decay: 0.01
+  amp: true
+  scheduler: "cosine"
+  warmup_epochs: 1
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v16"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

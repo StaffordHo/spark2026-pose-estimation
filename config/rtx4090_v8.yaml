@@ -1,0 +1,55 @@
+# V8: High-Resolution Refinement (Targeting < 0.1m / 1.0 deg)
+# Resolution: 448x448
+# Representation: 6D Continuous Rotation
+# Strategy: Differential LR + Large Data + 100ms Alignment
+
+experiment:
+  name: "spark2026_v8_highres"
+  seed: 42
+
+data:
+  data_dir: "."
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [448, 448]  # Significant bump for sub-pixel precision
+  batch_size: 48           # Reduced for 448x448 VRAM limit
+  num_workers: 0
+  augmentation: true
+  density_augmentation: true
+  normalize_translation: true
+  train_split: "train" 
+
+model:
+  backbone: "efficientnet_b3"
+  in_channels: 10         # 2 * num_bins (ON/OFF)
+  feature_dim: 1024       # Wider features for high-res
+  hidden_dim: 512
+  dropout: 0.2           # Increased slightly for better generalization
+  with_uncertainty: false
+  rotation_repr: "6d"     # Mathematically superior for continuity
+  pretrained: true
+  freeze_backbone: true   # Start frozen
+  unfreeze_at_epoch: 2    # Quick unfreeze after head stabilizes
+  backbone_lr_scale: 0.1  # 10x slower backbone LR (Differential LR)
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 1.0         # 6D loss is well-scaled naturally
+  trans_loss_type: "huber"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 30
+  learning_rate: 0.0005   # Base LR for PoseHead
+  weight_decay: 0.0001
+  amp: true               # Critical for 448x448 VRAM
+  scheduler: "cosine"     # Smooth decay for convergence
+  warmup_epochs: 2
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v8"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

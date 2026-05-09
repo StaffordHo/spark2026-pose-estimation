@@ -251,6 +251,8 @@ class PoseLoss(nn.Module):
         # Translation loss
         if self.trans_loss_type == "smooth_l1":
             trans_loss = F.smooth_l1_loss(pred["translation"], target["translation"])
+        elif self.trans_loss_type == "huber":
+            trans_loss = F.huber_loss(pred["translation"], target["translation"], delta=1.0)
         else:
             trans_loss = F.mse_loss(pred["translation"], target["translation"])
         
@@ -304,6 +306,8 @@ class PoseLoss6D(nn.Module):
         # Translation loss
         if self.trans_loss_type == "smooth_l1":
             trans_loss = F.smooth_l1_loss(pred["translation"], target["translation"])
+        elif self.trans_loss_type == "huber":
+            trans_loss = F.huber_loss(pred["translation"], target["translation"], delta=1.0)
         else:
             trans_loss = F.mse_loss(pred["translation"], target["translation"])
         

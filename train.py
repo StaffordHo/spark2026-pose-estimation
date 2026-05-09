@@ -5,9 +5,10 @@ Training script for spacecraft pose estimation.
 import os
 import sys
 import argparse
-import yaml
 import random
 from datetime import datetime
+import traceback
+import yaml
 
 import numpy as np
 import torch
@@ -44,13 +45,13 @@ def create_model(config: dict) -> nn.Module:
     """Create model from config."""
     model_cfg = config["model"]
     model = PoseNet(
-        backbone=model_cfg["backbone"],
-        in_channels=model_cfg["in_channels"],
-        feature_dim=model_cfg["feature_dim"],
-        hidden_dim=model_cfg["hidden_dim"],
-        base_channels=model_cfg["base_channels"],
-        dropout=model_cfg["dropout"],
-        with_uncertainty=model_cfg["with_uncertainty"],
+        backbone=model_cfg.get("backbone", "voxel_cnn"),
+        in_channels=model_cfg.get("in_channels", 10),
+        feature_dim=model_cfg.get("feature_dim", 512),
+        hidden_dim=model_cfg.get("hidden_dim", 256),
+        base_channels=model_cfg.get("base_channels", 32),
+        dropout=model_cfg.get("dropout", 0.1),
+        with_uncertainty=model_cfg.get("with_uncertainty", False),
         rotation_repr=model_cfg.get("rotation_repr", "quaternion"),
         pretrained=model_cfg.get("pretrained", False),
         freeze_backbone=model_cfg.get("freeze_backbone", False)
@@ -151,18 +152,28 @@ def train_epoch(
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
                 print(f"  WARNING: CUDA OOM at batch {batch_idx}, clearing cache and skipping", flush=True)
-                optimizer.zero_grad()
-                torch.cuda.empty_cache()
-                skipped += 1
-                continue
             else:
                 print(f"  WARNING: RuntimeError at batch {batch_idx}: {e}, skipping", flush=True)
-                optimizer.zero_grad()
-                skipped += 1
-                continue
-        except Exception as e:
-            print(f"  WARNING: Error at batch {batch_idx}: {e}, skipping", flush=True)
             optimizer.zero_grad()
+            torch.cuda.empty_cache()
+            # PyTorch scaler state becomes corrupted if backward() or unscale_() fails mid-step
+            # Forcing an empty step() and update() resets the internal unscale_ state
+            try:
+                scaler.step(optimizer)
+                scaler.update()
+            except Exception:
+                pass
+            skipped += 1
+            continue
+        except Exception as e:
+            print(f"  WARNING: Error at batch {batch_idx}: {e}", flush=True)
+            traceback.print_exc()
+            optimizer.zero_grad()
+            try:
+                scaler.step(optimizer)
+                scaler.update()
+            except Exception:
+                pass
             skipped += 1
             continue
     
@@ -212,8 +223,9 @@ def main():
     parser.add_argument("--epochs", type=int, default=None, help="Override number of epochs")
     parser.add_argument("--batch_size", type=int, default=None, help="Override batch size")
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
-    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
-    parser.add_argument("--fast_dev_run", action="store_true", help="Quick test run with 2 batches")
+    parser.add_argument("--resume", type=str, default="", help="Path to checkpoint to resume from")
+    parser.add_argument("--finetune", action="store_true", help="If resuming, adds num_epochs to start_epoch instead of targeting absolute num_epochs")
+    parser.add_argument("--fast-dev-run", action="store_true", help="Run 2 epochs with 1 log interval for debugging")
     args = parser.parse_args()
     
     # Load config
@@ -247,6 +259,10 @@ def main():
     target_size = tuple(target_size_cfg) if target_size_cfg else None
     augmentation = config["data"].get("augmentation", False)
     normalize_translation = config["data"].get("normalize_translation", False)
+    density_augmentation = config["data"].get("density_augmentation", False)
+    robust_augmentation = config["data"].get("robust_augmentation", False)
+    sequence_length = config["data"].get("sequence_length", 1)
+    train_split = config["data"].get("train_split", "train")
     
     # Create dataloaders
     print("\nLoading data...", flush=True)
@@ -259,7 +275,11 @@ def main():
         width=config["data"]["width"],
         target_size=target_size,
         augmentation=augmentation,
-        normalize_translation=normalize_translation
+        normalize_translation=normalize_translation,
+        density_augmentation=density_augmentation,
+        robust_augmentation=robust_augmentation,
+        sequence_length=sequence_length,
+        train_split=train_split
     )
     print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}", flush=True)
     
@@ -272,7 +292,7 @@ def main():
     
     # Loss function
     rotation_repr = config["model"].get("rotation_repr", "quaternion")
-    if config["model"]["with_uncertainty"]:
+    if config["model"].get("with_uncertainty", False):
         criterion = PoseLossUncertainty()
     elif rotation_repr == "6d":
         criterion = PoseLoss6D(
@@ -285,8 +305,8 @@ def main():
         criterion = PoseLoss(
             trans_weight=config["loss"]["trans_weight"],
             rot_weight=config["loss"]["rot_weight"],
-            trans_loss_type=config["loss"]["trans_loss_type"],
-            rot_loss_type=config["loss"]["rot_loss_type"]
+            trans_loss_type=config["loss"].get("trans_loss_type", "smooth_l1"),
+            rot_loss_type=config["loss"].get("rot_loss_type", "geodesic")
         )
     
     # Optimizer — differential learning rates for pretrained backbone
@@ -335,14 +355,56 @@ def main():
     if args.resume:
         print(f"\nResuming from checkpoint: {args.resume}")
         checkpoint = torch.load(args.resume, map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if "scheduler_state_dict" in checkpoint:
-            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        if "scaler_state_dict" in checkpoint:
-            scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        
+        # Smart load state dict: handle dimensionality expansion for temporal stacking
+        state_dict = checkpoint["model_state_dict"]
+        model_dict = model.state_dict()
+        channel_expansion_occurred = False
+        
+        for name, param in state_dict.items():
+            if name in model_dict:
+                if param.shape != model_dict[name].shape:
+                    print(f"  Scaling weight shape {name} from {param.shape} to {model_dict[name].shape}")
+                    channel_expansion_occurred = True
+                    # If this is the first conv layer (temporal channel expansion)
+                    if len(param.shape) == 4 and param.shape[1] != model_dict[name].shape[1]:
+                        old_channels = param.shape[1]
+                        new_channels = model_dict[name].shape[1]
+                        # Repeat the learned spatial filters across the new temporal dimension, scaling down magnitude
+                        repeat_factor = new_channels // old_channels
+                        if new_channels % old_channels == 0:
+                            scaled_param = param.repeat(1, repeat_factor, 1, 1) / repeat_factor
+                            model_dict[name].copy_(scaled_param)
+                        else:
+                            print(f"  WARNING: Cannot cleanly repeat {old_channels} to {new_channels}. Initializing {name} from scratch.")
+                    else:
+                        print(f"  WARNING: Shape mismatch {name} without expansion logic. Initializing from scratch.")
+                else:
+                    model_dict[name].copy_(param)
+                    
+        model.load_state_dict(model_dict)
+        
+        # Optimizer check: if we expanded channels, we MUST discard the old optimizer state
+        # because AdamW's internal momentum buffers (exp_avg, exp_avg_sq) still expect 10 channels
+        if channel_expansion_occurred:
+            print("  [Temporal Shift] Channel expansion detected! Discarding V15 optimizer state to protect AdamW momentum buffers.")
+        else:
+            try:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                if "scheduler_state_dict" in checkpoint:
+                    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                if "scaler_state_dict" in checkpoint:
+                    scaler.load_state_dict(checkpoint["scaler_state_dict"])
+                print("Successfully loaded optimizer and scheduler states.")
+            except Exception as e:
+                print(f"Warning: Could not load optimizer/scheduler state ({e}). Starting with fresh optimizer state for fine-tuning.")
+        
         start_epoch = checkpoint["epoch"] + 1
         best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        
+        if args.finetune:
+            num_epochs = start_epoch + config["training"]["epochs"]
+            print(f"  [Fine-tune] Adjusted target num_epochs to {num_epochs} to ensure {config['training']['epochs']} full epochs run.")
     
     # Fast dev run
     if args.fast_dev_run:
@@ -421,8 +483,9 @@ def main():
             "config": config
         }, latest_path)
         
-        # Save milestone checkpoint every 10 epochs
-        if (epoch + 1) % 10 == 0:
+        # Save milestone checkpoint every 10 epochs (or every epoch if configured)
+        save_every = 1 if config["training"].get("save_every_epoch", False) else 10
+        if (epoch + 1) % save_every == 0:
             checkpoint_path = os.path.join(
                 config["logging"]["checkpoint_dir"], f"epoch_{epoch+1}.pth"
             )
@@ -435,6 +498,7 @@ def main():
                 "best_val_loss": best_val_loss,
                 "config": config
             }, checkpoint_path)
+            print(f"Saved epoch checkpoint to {checkpoint_path}")
     
     writer.close()
     print("\nTraining complete!")

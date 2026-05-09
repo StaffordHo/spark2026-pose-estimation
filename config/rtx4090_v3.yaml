@@ -1,0 +1,65 @@
+# =============================================================================
+# V3: Fine-tune from best checkpoint with anti-overfitting
+# =============================================================================
+# Key changes:
+#   1. Resume from checkpoints/best.pth (old epoch 14, 256x256)
+#   2. density_augmentation: true — bridges train/test domain gap
+#   3. Higher dropout (0.3) and weight_decay (0.05)
+#   4. Backbone stays FROZEN — prevents memorization
+#   5. 60 more epochs with cosine restarts
+# =============================================================================
+
+experiment:
+  name: "spark2026_v3"
+  seed: 42
+
+data:
+  data_dir: "."
+  batch_size: 64
+  num_workers: 0
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [256, 256]       # Keep 256x256 — prevents overfitting
+  augmentation: true
+  normalize_translation: true
+  density_augmentation: true    # KEY: randomly drop 20-80% events to bridge domain gap
+
+model:
+  backbone: "efficientnet"
+  pretrained: true
+  freeze_backbone: true         # KEEP FROZEN — prevents memorization
+  unfreeze_at_epoch: 999        # Never unfreeze
+  backbone_lr_scale: 0.1
+  rotation_repr: "6d"
+  in_channels: 10
+  feature_dim: 512
+  hidden_dim: 256
+  base_channels: 32
+  dropout: 0.3                  # Higher dropout (was 0.2)
+  with_uncertainty: false
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 3.0
+  trans_loss_type: "smooth_l1"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 60
+  learning_rate: 0.0001         # Lower LR for fine-tuning (was 0.0003)
+  weight_decay: 0.05            # Stronger regularization (was 0.01)
+  scheduler: "cosine_warm_restarts"
+  T_0: 10
+  T_mult: 2
+  warmup_epochs: 2
+  amp: true
+  grad_clip: 0.5
+  save_every_epoch: true
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v3"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

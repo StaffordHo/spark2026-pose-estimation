@@ -46,8 +46,9 @@ class PoseNet(nn.Module):
                 feature_dim=feature_dim,
                 base_channels=base_channels * 2  # ResNet uses more channels
             )
-        elif backbone == "efficientnet":
+        elif backbone.startswith("efficientnet") or backbone.startswith("convnext"):
             self.backbone = PretrainedEfficientNet(
+                backbone_type=backbone,
                 in_channels=in_channels,
                 feature_dim=feature_dim,
                 pretrained=pretrained,

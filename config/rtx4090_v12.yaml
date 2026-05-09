@@ -1,0 +1,56 @@
+# V12: Platinum Focus (V7 Fine-tune)
+# Changes:
+# 1. Resumes from V7 best checkpint (320x320)
+# 2. Aggressive orientation focus: rot_weight = 20.0
+# 3. Ported V11 augmentations (Jitter & Erasing) to break trajectory memorization
+# 4. Low fine-tuning LR: 0.00005
+
+experiment:
+  name: "spark2026_v12_platinum"
+  seed: 42
+
+data:
+  data_dir: "."
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [320, 320]    # Back to Magic Resolution
+  batch_size: 64
+  num_workers: 0             # Windows compatibility
+  augmentation: true         # Ported Robust Augs
+  density_augmentation: true
+  normalize_translation: true
+  train_split: "train" 
+
+model:
+  backbone: "efficientnet_b3"
+  in_channels: 10
+  feature_dim: 1024
+  hidden_dim: 512
+  dropout: 0.2
+  with_uncertainty: false
+  rotation_repr: "quaternion"
+  pretrained: true
+  freeze_backbone: false     # Fine-tune everything
+  backbone_lr_scale: 0.5     # Slower backbone than head
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 20.0            # Aggressive Orientation Focus
+  trans_loss_type: "huber"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 60                 # V7 ended at 30, so this gives 30 epochs of fine-tuning
+  learning_rate: 0.00005     # Fine-tuning LR
+  weight_decay: 0.01
+  amp: true
+  scheduler: "cosine"
+  warmup_epochs: 1
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v12"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

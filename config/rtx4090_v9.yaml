@@ -1,0 +1,56 @@
+# V9: High-Resolution Refinement (Targeting < 0.1m / 1.0 deg)
+# Changes from V8:
+# 1. Switched BACK to Quaternions (more stable for sub-degree precision)
+# 2. Increased rotation loss weight to 10.0 (aggressive orientation learning)
+# 3. Retained 448x448 resolution and Differential LR
+
+experiment:
+  name: "spark2026_v9_hybrid"
+  seed: 42
+
+data:
+  data_dir: "."
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [448, 448]
+  batch_size: 48           # Fits in 24GB with B3
+  num_workers: 0           # Windows compatibility
+  augmentation: true
+  density_augmentation: true
+  normalize_translation: true
+  train_split: "train" 
+
+model:
+  backbone: "efficientnet_b3"
+  in_channels: 10
+  feature_dim: 1024
+  hidden_dim: 512
+  dropout: 0.2
+  with_uncertainty: false
+  rotation_repr: "quaternion" # Pivoted back for stability
+  pretrained: true
+  freeze_backbone: true
+  unfreeze_at_epoch: 2
+  backbone_lr_scale: 0.1
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 10.0         # Aggressive orientation weighting
+  trans_loss_type: "huber"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 30
+  learning_rate: 0.0005
+  weight_decay: 0.0001
+  amp: true
+  scheduler: "cosine"
+  warmup_epochs: 2
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v9"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

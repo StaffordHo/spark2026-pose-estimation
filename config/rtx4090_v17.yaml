@@ -1,0 +1,58 @@
+# V17: Temporal Architecture (Channel Stacking)
+# Changes:
+# 1. Base: Resumes from V15 latest.pth (Spatial SOTA)
+# 2. sequence_length: 3 (Extract 300 continuous milliseconds)
+# 3. num_bins: 15 (15 bins * 2 polarities = 30 channels)
+# 4. in_channels: 30 (Adapt EfficientNet first conv)
+# 5. backbone_lr_scale: 0.2 (Slowly teach pretrained spatial filters to understand time)
+# 6. rot_weight: 10.0 (Back to V13 baseline for stable learning)
+
+experiment:
+  name: "spark2026_v17_temporal"
+  seed: 42
+
+data:
+  data_dir: "."
+  sequence_length: 3         # V17: 300ms window
+  num_bins: 15               # V17: 30 channels
+  height: 720
+  width: 1280
+  target_size: [320, 320]
+  batch_size: 24             # Reduced from 48 to fit 30-channel sequence in VRAM
+  num_workers: 0             # Windows stability
+  augmentation: true         # V7 baseline flips enabled
+  robust_augmentation: false # Gated V11 additions DISABLED 
+  density_augmentation: true
+  normalize_translation: true
+  train_split: "train" 
+
+model:
+  backbone: "efficientnet_b3"
+  in_channels: 30            # V17: 15 bins * 2 polarities
+  feature_dim: 1024
+  hidden_dim: 512
+  dropout: 0.2
+  freeze_backbone: false
+  backbone_lr_scale: 0.2     # Train time-filters gently
+  rotation_repr: "quaternion"
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 10.0           # Balanced Priority
+  trans_loss_type: "huber"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 60                 
+  learning_rate: 0.0001      # Increased from 5e-6 to learn 30ch temporal filters
+  weight_decay: 0.01
+  amp: true
+  scheduler: "cosine"
+  warmup_epochs: 2
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v17"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

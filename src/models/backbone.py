@@ -196,8 +196,16 @@ class PretrainedEfficientNet(nn.Module):
     - Outputs feature vector of size `feature_dim`
     """
     
+class PretrainedEfficientNet(nn.Module):
+    """
+    Wrapper for pretrained EfficientNet (B0-B7) from torchvision.
+    Loads ImageNet-pretrained weights and adapts the first conv layer
+    from 3 channels to `in_channels` (default 10) for event voxel grid input.
+    """
+    
     def __init__(
         self,
+        backbone_type: str = "efficientnet_b0",
         in_channels: int = 10,
         feature_dim: int = 512,
         pretrained: bool = True,
@@ -205,32 +213,55 @@ class PretrainedEfficientNet(nn.Module):
     ):
         super().__init__()
         
-        # Load pretrained EfficientNet-B0
-        if pretrained:
-            weights = models.EfficientNet_B0_Weights.DEFAULT
+        # Load backbone
+        if backbone_type == "efficientnet_b0":
+            weights = models.EfficientNet_B0_Weights.DEFAULT if pretrained else None
             base_model = models.efficientnet_b0(weights=weights)
-            print("Loaded ImageNet-pretrained EfficientNet-B0 weights", flush=True)
+            in_features = 1280
+        elif backbone_type == "efficientnet_b1":
+            weights = models.EfficientNet_B1_Weights.DEFAULT if pretrained else None
+            base_model = models.efficientnet_b1(weights=weights)
+            in_features = 1280
+        elif backbone_type == "efficientnet_b3":
+            weights = models.EfficientNet_B3_Weights.DEFAULT if pretrained else None
+            base_model = models.efficientnet_b3(weights=weights)
+            in_features = 1536
+        elif backbone_type == "convnext_tiny":
+            weights = models.ConvNeXt_Tiny_Weights.DEFAULT if pretrained else None
+            base_model = models.convnext_tiny(weights=weights)
+            in_features = 768
         else:
-            base_model = models.efficientnet_b0(weights=None)
+            raise ValueError(f"Unsupported backbone: {backbone_type}")
+
+        print(f"Loaded {backbone_type} weights (pretrained={pretrained})", flush=True)
         
         # Adapt first conv layer for N-channel input
-        original_conv = base_model.features[0][0]
-        new_conv = nn.Conv2d(
-            in_channels, 
-            original_conv.out_channels,
-            kernel_size=original_conv.kernel_size,
-            stride=original_conv.stride,
-            padding=original_conv.padding,
-            bias=original_conv.bias is not None
-        )
+        if "convnext" in backbone_type:
+            original_conv = base_model.features[0][0]
+            new_conv = nn.Conv2d(
+                in_channels, 
+                original_conv.out_channels,
+                kernel_size=original_conv.kernel_size,
+                stride=original_conv.stride,
+                padding=original_conv.padding,
+                bias=original_conv.bias is not None
+            )
+        else:
+            original_conv = base_model.features[0][0]
+            new_conv = nn.Conv2d(
+                in_channels, 
+                original_conv.out_channels,
+                kernel_size=original_conv.kernel_size,
+                stride=original_conv.stride,
+                padding=original_conv.padding,
+                bias=original_conv.bias is not None
+            )
         
         if pretrained:
             # Smart initialization: average pretrained 3ch weights across N channels
             with torch.no_grad():
-                # Original weights shape: (32, 3, 3, 3)
-                # Repeat and average to get (32, in_channels, 3, 3)
                 pretrained_weight = original_conv.weight.data
-                avg_weight = pretrained_weight.mean(dim=1, keepdim=True)  # (32, 1, 3, 3)
+                avg_weight = pretrained_weight.mean(dim=1, keepdim=True)
                 new_conv.weight.data = avg_weight.repeat(1, in_channels, 1, 1)
         
         base_model.features[0][0] = new_conv
@@ -239,8 +270,8 @@ class PretrainedEfficientNet(nn.Module):
         self.features = base_model.features
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         
-        # EfficientNet-B0 outputs 1280 features
-        self.fc = nn.Linear(1280, feature_dim)
+        # Adaptation layer to target feature_dim
+        self.fc = nn.Linear(in_features, feature_dim)
         
         self.feature_dim = feature_dim
         self._frozen = freeze_backbone

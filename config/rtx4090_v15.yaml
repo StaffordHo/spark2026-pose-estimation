@@ -1,0 +1,55 @@
+# V15: V13 Hyper-Tuned (Sub-Degree Push)
+# Changes:
+# 1. Base: Resumes from the proven V13 latest checkpoint (Epoch 22).
+# 2. Rot Weight: Increased from 10.0 to 15.0 for the final orientation squeeze.
+# 3. LR Squeeze: Dropped from 1e-5 to 5e-6 to prevent gradient explosions on the refined features.
+# 4. Stealth Mode: Robust augs remain explicitly DISABLED.
+
+experiment:
+  name: "spark2026_v15_hyper_tuned"
+  seed: 42
+
+data:
+  data_dir: "."
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [320, 320]
+  batch_size: 64
+  num_workers: 0             # Windows stability
+  augmentation: true         # V7 baseline flips enabled
+  robust_augmentation: false # Gated V11 additions DISABLED 
+  density_augmentation: true
+  normalize_translation: true
+  train_split: "train" 
+
+model:
+  backbone: "efficientnet_b3"
+  in_channels: 10
+  feature_dim: 1024
+  hidden_dim: 512
+  dropout: 0.2
+  freeze_backbone: false
+  backbone_lr_scale: 0.5     # Slower backbone than head
+  rotation_repr: "quaternion"
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 15.0           # Assertive Orientation Focus
+  trans_loss_type: "huber"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 60                 # ~40 epochs of fine-tuning relative to V13/V7
+  learning_rate: 0.000005    # Extreme Surgical LR
+  weight_decay: 0.01
+  amp: true
+  scheduler: "cosine"
+  warmup_epochs: 1
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v15"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

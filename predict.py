@@ -248,8 +248,14 @@ def main():
                 "ys": f["events"]["ys"][()],
                 "ts": f["events"]["ts"][()],
                 "ps": f["events"]["ps"][()],
-                "timestamp": f["labels"]["data"]["timestamp"][()],
             }
+            # Test files don't have labels — generate synthetic timestamps
+            if "labels" in f and "data" in f["labels"] and "timestamp" in f["labels"]["data"]:
+                data["timestamp"] = f["labels"]["data"]["timestamp"][()]
+            else:
+                # Generate synthetic timestamps at 1ms (1000 µs) intervals
+                max_pose_idx = max(pi for _, pi in indices)
+                data["timestamp"] = np.arange(0, max_pose_idx + 2) * 1000 + int(data["ts"][0])
         
         batch_voxels = []
         batch_ids = []

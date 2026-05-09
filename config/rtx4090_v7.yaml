@@ -1,0 +1,62 @@
+# =============================================================================
+# V7 Sequential SOTA Configuration
+# =============================================================================
+# Changes:
+#   1. Scaled training: 143,000+ samples (previously ~100k but leaky)
+#   2. Strict splitting: Train (0-239), Val (240-269) - NO LEAK
+#   3. Backbone: EfficientNet-B3
+#   4. Resolution: 320x320
+#   5. Loss: Huber (transition) + Geodesic (quaternion)
+#   6. Fixed windowing logic in predict.py (100ms)
+# =============================================================================
+
+experiment:
+  name: "spark2026_v7_tracking"
+  seed: 42
+
+data:
+  data_dir: "."
+  batch_size: 64
+  num_workers: 0              # Windows compatibility (no multiprocessing)
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [320, 320]
+  augmentation: true
+  normalize_translation: true
+  density_augmentation: true
+  train_split: "train"        # 0-239 sequences
+
+model:
+  backbone: "efficientnet_b3"
+  pretrained: true
+  feature_dim: 1024
+  hidden_dim: 512
+  dropout: 0.2
+  freeze_backbone: true
+  unfreeze_at_epoch: 3        # Unfreeze earlier since epochs are longer
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 5.0             # Increased rotation weight
+  trans_loss_type: "huber"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 30                  # 143k samples * 30 epochs is plenty
+  learning_rate: 0.0005
+  weight_decay: 0.01
+  scheduler: "cosine_warm_restarts"
+  T_0: 10
+  T_mult: 2
+  warmup_epochs: 2
+  amp: true
+  grad_clip: 1.0
+  save_every_epoch: true
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v7"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

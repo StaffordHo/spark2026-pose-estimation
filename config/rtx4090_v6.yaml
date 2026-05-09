@@ -1,0 +1,64 @@
+# =============================================================================
+# V6: SOTA Architecture — Corrected Normalization & Augmentation
+# =============================================================================
+# Improvements:
+#   1. EfficientNet-B3 backbone
+#   2. Huber loss for rotation-robust translation
+#   3. FIXED: TRANS_MEAN centered at [0, 0, 5.68] in dataset.py
+#   4. FIXED: Both horizontal and vertical flips in training and TTA
+#   5. FIXED: De-normalize BEFORE TTA merge in predict.py
+# =============================================================================
+
+experiment:
+  name: "spark2026_v6"
+  seed: 42
+
+data:
+  data_dir: "."
+  batch_size: 48
+  num_workers: 0                # Stability on Windows
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [320, 320]
+  augmentation: true
+  normalize_translation: true
+  density_augmentation: true
+  train_split: "train_all"      # Use all 270 sequences
+
+model:
+  backbone: "efficientnet_b3"
+  pretrained: true
+  freeze_backbone: true
+  unfreeze_at_epoch: 10
+  backbone_lr_scale: 0.1
+  rotation_repr: "6d"
+  in_channels: 10
+  feature_dim: 1024
+  hidden_dim: 512
+  dropout: 0.3
+  with_uncertainty: false
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 5.0
+  trans_loss_type: "huber"
+  rot_loss_type: "geodesic"
+
+training:
+  epochs: 80
+  learning_rate: 0.0003
+  weight_decay: 0.05
+  scheduler: "cosine_warm_restarts"
+  T_0: 20
+  T_mult: 1
+  warmup_epochs: 5
+  amp: true
+  grad_clip: 1.0
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v6"
+  log_interval: 10
+  val_interval: 1
+  save_best: true

@@ -1,0 +1,56 @@
+# =============================================================================
+# Keypoint + PnP Configuration for RTX 4090
+# =============================================================================
+# Uses FPN + Keypoint Heatmap detection + geometric PnP solving.
+# Expected accuracy: ~0.1-0.3m translation, ~0.1-0.5 rad orientation
+# =============================================================================
+
+experiment:
+  name: "spark2026_keypoint_pnp"
+  seed: 42
+
+data:
+  data_dir: "."
+  batch_size: 32                # Smaller batch — FPN uses more VRAM
+  num_workers: 0
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [256, 256]
+  augmentation: true
+  normalize_translation: false  # Not needed — PnP handles translation
+  keypoint_targets: true        # Generate heatmap supervision
+
+model:
+  architecture: "keypoint_pnp"  # Use KeypointPoseNet
+  backbone: "efficientnet"
+  pretrained: true
+  freeze_backbone: true
+  in_channels: 10
+  n_keypoints: 8
+  heatmap_size: 64              # Output heatmap resolution
+  fpn_channels: 256
+  heatmap_sigma: 2.0
+
+loss:
+  heatmap_loss: "mse"           # MSE on Gaussian heatmaps
+  coord_loss_weight: 5.0        # Weight for coordinate L1 loss (auxiliary)
+
+training:
+  epochs: 30
+  learning_rate: 0.001          # Higher LR — only head is trainable
+  weight_decay: 0.0001
+  scheduler: "cosine_warm_restarts"
+  T_0: 10
+  T_mult: 2
+  warmup_epochs: 3
+  amp: false                     # Disabled — heatmap softmax unstable in float16
+  grad_clip: 1.0
+  save_every_epoch: true
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_kp"  # Separate from regression checkpoints
+  log_interval: 50
+  val_interval: 1
+  save_best: true

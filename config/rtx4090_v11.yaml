@@ -1,0 +1,56 @@
+# V11: Robust High-Resolution (ConvNeXt-Tiny)
+# Changes:
+# 1. ConvNeXt-Tiny backbone for superior spatial sensing
+# 2. Voxel Jittering & Random Erasing to break trajectory-memorization
+# 3. High regularization (Dropout 0.4, Weight Decay 0.05)
+# 4. 384x384 target size
+
+experiment:
+  name: "spark2026_v11_robust"
+  seed: 42
+
+data:
+  data_dir: "."
+  num_bins: 5
+  height: 720
+  width: 1280
+  target_size: [384, 384]    # Precision rollback
+  batch_size: 48             # Fits ConvNeXt in 24GB
+  num_workers: 0             # Windows stability
+  augmentation: true         # Includes Jitter & Erasing now
+  density_augmentation: true
+  normalize_translation: true
+  train_split: "train" 
+
+model:
+  backbone: "convnext_tiny"
+  in_channels: 10
+  feature_dim: 1024
+  hidden_dim: 512
+  dropout: 0.4               # Strong regularization
+  with_uncertainty: false
+  rotation_repr: "quaternion"
+  pretrained: true
+  freeze_backbone: true
+  unfreeze_at_epoch: 3
+  backbone_lr_scale: 1.0     # Symmetric for stability
+
+loss:
+  trans_weight: 1.0
+  rot_weight: 5.0            # Balanced
+  trans_loss_type: "huber"
+
+training:
+  epochs: 30
+  learning_rate: 0.0002      # Conservative LR for ConvNeXt
+  weight_decay: 0.05         # Higher regularization
+  amp: true
+  scheduler: "cosine"
+  warmup_epochs: 2
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints_v11"
+  log_interval: 10
+  val_interval: 1
+  save_best: true
